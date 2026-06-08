@@ -42,5 +42,21 @@ services:
       - mysql_data:/var/lib/mysql
     restart: unless-stopped
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vue_frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "8080:5173"
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped
+    depends_on:
+      - web
+
 volumes:
   mysql_data:
