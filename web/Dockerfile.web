@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Копіюємо requirements.txt з усього проекту (контекст збірки буде з кореня)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копіюємо вміст папки web всередину контейнера
+COPY ./web .
+
+# Окремо копіюємо папку database, щоб FastAPI міг імпортувати моделі БД
+COPY ./database ./database
+
+EXPOSE 8000
+
+# Тепер шлях прямий: папка src -> файл main -> об'єкт app
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

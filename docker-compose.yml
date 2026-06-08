@@ -11,34 +11,36 @@ services:
       - .:/app
     restart: unless-stopped
     depends_on:
-      - postgres_db
+      - mysql_db
 
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
-    volumes:
-      - .:/app
-    restart: unless-stopped
-    depends_on:
-      - postgres_db
+      build:
+        context: . 
+        dockerfile: web/Dockerfile.web 
+      env_file:
+        - .env
+      ports:
+        - "8000:8000"
+      volumes:
+        - ./web:/app 
+        - ./database:/app/database 
+      restart: unless-stopped
+      depends_on:
+        - mysql_db
 
-  postgres_db:
-    image: postgres:15-alpine
-    container_name: postgres_db
+  mysql_db:
+    image: mysql:8.0
+    container_name: mysql_db
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: super_password123
-      POSTGRES_DB: proxy_bot_db
+      MYSQL_ROOT_PASSWORD: super_root_password123
+      MYSQL_DATABASE: proxy_bot_db
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: super_password123
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
     restart: unless-stopped
 
 volumes:
-  pgdata:
+  mysql_data:
