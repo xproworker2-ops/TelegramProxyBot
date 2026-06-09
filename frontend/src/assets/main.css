@@ -1,0 +1,46 @@
+/* 1. Базове скидання (Reset) та налаштування розмірів */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* 2. Головні стилі для сторінки */
+body {
+  background-color: #f4f4f5; /* Світло-сірий фон */
+  color: #1a1a1a; /* Темний текст */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden; /* Щоб інтерфейс не смикався і не скролився весь екран */
+}
+
+/* 3. Кастомізація скролбару (щоб виглядав акуратно, як у Telegram) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c0c4cc;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8abb2;
+}
+
+/* 4. Глобальне приховування дефолтних стрілочок для інпутів з типом number */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type=number] {
+  -moz-appearance: textfield;
+}

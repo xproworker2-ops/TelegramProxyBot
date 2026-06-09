@@ -4,7 +4,7 @@ from aiogram import Router, types, F
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-from sqlalchemy import select
+from sqlalchemy import select, desc
 
 from database.connection import async_session
 from database.models import User, Message
@@ -49,34 +49,48 @@ def get_ticket_inline_banner(theme_name: str, ticket_id: int):
 
 
 # Функція збереження історії в БД
-async def save_to_db(user_id: int, username: str, text: str, sender: str = "user", theme: str | None = None):
+async def save_to_db(
+    user_id: int, 
+    username: str, 
+    text: str | None, 
+    sender: str = "user", 
+    theme: str = "none",
+    msg_type: str = "text",
+    category: str = "none",
+    ticket_num: int | None = None,
+    file_id: str | None = None,
+    file_type: str = "none",
+    parent_id: int | None = None
+):
     async with async_session() as session:
         async with session.begin():
-            result = await session.execute(
-                select(User).where(User.telegram_id == user_id)
-            )
+            result = await session.execute(select(User).where(User.telegram_id == user_id))
             user = result.scalar_one_or_none()
 
             if not user:
-                user = User(
-                    telegram_id=user_id,
-                    username=username,
-                    current_theme=theme or "Не обрано",
-                )
+                user = User(telegram_id=user_id, username=username, current_theme=theme)
                 session.add(user)
                 await session.flush()
             else:
-                if theme:
+                if theme != "none":
                     user.current_theme = theme
 
-            if theme is None:
+            if theme == "none" and user:
                 theme = user.current_theme
 
+            # ВСЕ ПРОСТО: Нове повідомлення в базі = воно ще не прочитане адміном!
             message_record = Message(
                 user_id=user_id,
                 sender=sender,
                 text=text,
                 theme=theme,
+                msg_type=msg_type,
+                category=category,
+                ticket_num=ticket_num,
+                file_id=file_id,
+                file_type=file_type,
+                parent_id=parent_id,
+                is_read=False  # Завжди за замовчуванням False
             )
             session.add(message_record)
 
@@ -105,12 +119,14 @@ async def command_start_handler(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "без_юзернейму"
 
-    await save_to_db(user_id, username, message.text, sender="user")
+    # Мітимо як команду
+    await save_to_db(user_id, username, message.text, sender="user", msg_type="command")
 
     reply_text = "Привіт! Я твій бот-проксі. Оберіть тему для обговорення, натиснувши на одну з кнопок нижче:"
     await message.answer(reply_text, reply_markup=get_themes_reply_keyboard())
 
-    await save_to_db(user_id, username, reply_text, sender="bot")
+    # Відповідь бота мітимо як звичайний текст
+    await save_to_db(user_id, username, reply_text, sender="bot", msg_type="text")
 
 
 # ОБРОБНИК НАТИСКАННЯ НА КНОПКИ З ТЕМАМИ
@@ -118,19 +134,20 @@ async def command_start_handler(message: types.Message):
 async def handle_theme_click(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "без_юзернейму"
-    
     ticket_id = message.message_id
     
+    # Конвертуємо красивий текст кнопки в чистий системний id
+    system_theme = "tech_support" if "Технічна" in message.text else "billing_issue"
+    
     await save_to_db(
-        user_id,
-        username,
-        f"Зміна теми на: {message.text} (Тікет №{ticket_id})",
+        user_id=user_id,
+        username=username,
+        text=f"Зміна теми на: {system_theme}",
         sender="user",
-        theme=message.text,
+        theme=system_theme,
+        msg_type="theme_change"
     )
     
-    # Inline-банер з номером та кнопкою скасування ми кріпимо до повідомлення handles у handle_user_request
-    # Але оскільки тут юзер має бачити банер, ми міняємо текст інструкції на сам банер.
     await message.answer(
         "Будь ласка, введіть ваше питання одним повідомленням:", 
         reply_markup=get_ticket_inline_banner(message.text, ticket_id)
@@ -165,40 +182,112 @@ async def handle_user_request(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "без_юзернейму"
 
+    # 1. Визначаємо, чи прийшов файл, і дістаємо його file_id та текст (підпис)
+    extracted_text = message.text or message.caption or "" # Беремо текст або підпис під фото
+    extracted_file_id = None
+    extracted_file_type = "none"
+
+    if message.photo:
+        # Telegram надсилає масив прев'юшок різних розмірів, беремо останню (найбільшу якість)
+        extracted_file_id = message.photo[-1].file_id
+        extracted_file_type = "photo"
+    elif message.document:
+        extracted_file_id = message.document.file_id
+        extracted_file_type = "document"
+
+    # 2. Читаємо стан юзера з бази
     async with async_session() as session:
         async with session.begin():
             result = await session.execute(select(User).where(User.telegram_id == user_id))
             user = result.scalar_one_or_none()
-            current_theme = user.current_theme if user else None
+            current_theme = user.current_theme if user else "none"
+            has_active = user.has_active_ticket if user else False
 
-    if not current_theme or current_theme == "Не обрано":
+    # СЦЕНАРІЙ А: У юзера ВЖЕ Є активний тикет і він дописує текст або надсилає ФАЙЛ (Бот мовчить)
+    if has_active:
+        async with async_session() as session:
+            async with session.begin():
+                ticket_query = await session.execute(
+                    select(Message)
+                    .where(Message.user_id == user_id, Message.msg_type == "ticket")
+                    .order_by(Message.id.asc())
+                )
+                first_ticket = ticket_query.scalars().first()
+                orig_ticket_num = first_ticket.ticket_num if first_ticket else message.message_id
+                orig_theme = first_ticket.theme if first_ticket else "tech_support"
+        
+        category = "tech" if "tech" in orig_theme else "billing"
+        
+        # Мовчки зберігаємо доповнення (це може бути чисте фото/документ без тексту!)
+        await save_to_db(
+            user_id=user_id,
+            username=username,
+            text=extracted_text, 
+            sender="user",
+            theme=orig_theme,
+            msg_type="ticket",
+            category=category,
+            ticket_num=orig_ticket_num,
+            file_id=extracted_file_id,     # Передаємо файл
+            file_type=extracted_file_type   # Передаємо тип файлу
+        )
+        
+        # Для зовнішнього API формуємо інфо-рядок
+        api_log = f"[Доповнення №{orig_ticket_num} (Файл: {extracted_file_type})]: {extracted_text}"
+        await send_to_external_api(user_id, username, api_log)
+        return
+
+    # СЦЕНАРІЙ Б: Юзер флудить/шле файли без обраної теми
+    if current_theme == "none":
         await message.answer(
-            "Будь ласка, спочатку оберіть тему для діалогу. Натисніть одну з кнопок нижче:",
+            "Будь ласка, спочатку оберіть тему за допомогою кнопок, а потім надсилайте опис чи файли:",
             reply_markup=get_themes_reply_keyboard(),
         )
         return
 
-    # Номер тікета вираховується на основі message_id
-    ticket_num = message.message_id - 2
-    
-    # 1. Видаляємо «сире» повідомлення юзера з чату, щоб не дублювати контент
+    # СЦЕНАРІЙ В: Створення НОВОГО першого тикета (який теж може містити фото з описом)
     try:
         await message.delete()
     except Exception as e:
         print(f"[ПОМИЛКА ВИДАЛЕННЯ]: {e}")
 
-    # Склеюємо номер, тему та текст
-    formatted_text = f"Звернення №{ticket_num}\n{current_theme}\n\n{message.text}"
+    new_ticket_num = message.message_id - 2
+    category = "tech" if "tech" in current_theme else "billing"
+    display_theme_name = "🛠️ Технічна підтримка" if category == "tech" else "💳 Питання оплати"
+    
+    # Гарний опис для зворотного зв'язку
+    media_label = "📎 (Прикріплено файл) " if extracted_file_type != "none" else ""
+    formatted_text = f"Звернення №{new_ticket_num}\nТема: {display_theme_name}\n\n{media_label}{extracted_text}"
 
-    # Записуємо фінальний склеєний рядок у БД
-    await save_to_db(user_id, username, formatted_text, sender="user")
+    # Зберігаємо перший головний меседж тикета
+    await save_to_db(
+        user_id=user_id,
+        username=username,
+        text=extracted_text,
+        sender="user",
+        theme=current_theme,
+        msg_type="ticket",
+        category=category,
+        ticket_num=new_ticket_num,
+        file_id=extracted_file_id,
+        file_type=extracted_file_type
+    )
 
-    # 2. Виводимо вже модифіковане повідомлення в чат
+    # Виводимо підтвердження в чат. Якщо це було фото, бот може продублювати його юзеру, 
+    # але простіше надіслати текстову картку-підтвердження
     await message.answer(formatted_text)
 
-    # Дякуємо і повертаємо головне меню великих кнопок
-    reply_text = "Дякуємо! Ваш запит прийнято в обробку. Будь ласка, зачекайте."
-    await message.answer(reply_text, reply_markup=get_themes_reply_keyboard())
+    # Вмикаємо режим активного тикета
+    async with async_session() as session:
+        async with session.begin():
+            res = await session.execute(select(User).where(User.telegram_id == user_id))
+            db_user = res.scalar_one_or_none()
+            if db_user:
+                db_user.current_theme = "none"
+                db_user.has_active_ticket = True
 
-    await save_to_db(user_id, username, reply_text, sender="bot")
-    await send_to_external_api(user_id, username, formatted_text)
+    reply_text = "Дякуємо! Ваш запит з медіа-файлом прийнято. Очікуйте на відповідь оператора."
+    await message.answer(reply_text)
+    
+    await save_to_db(user_id, username, reply_text, sender="bot", msg_type="text", theme=current_theme)
+    await send_to_external_api(user_id, username, f"Створено тикет №{new_ticket_num} з файлом ({extracted_file_type})")
