@@ -5,6 +5,7 @@ from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from sqlalchemy import select, desc
+from database.websocket_manager import ws_manager  # Специфікуй шлях, якщо він в іншій папці
 
 from database.connection import async_session
 from database.models import User, Message
@@ -49,6 +50,7 @@ def get_ticket_inline_banner(theme_name: str, ticket_id: int):
 
 
 # Функція збереження історії в БД
+# Функція збереження історії в БД
 async def save_to_db(
     user_id: int, 
     username: str, 
@@ -78,7 +80,7 @@ async def save_to_db(
             if theme == "none" and user:
                 theme = user.current_theme
 
-            # ВСЕ ПРОСТО: Нове повідомлення в базі = воно ще не прочитане адміном!
+            # Створюємо об'єкт повідомлення
             message_record = Message(
                 user_id=user_id,
                 sender=sender,
@@ -93,6 +95,37 @@ async def save_to_db(
                 is_read=False  # Завжди за замовчуванням False
             )
             session.add(message_record)
+            
+            # Фіксуємо в базі для отримання реального ID та created_at
+            await session.flush() 
+
+        # Після успішного закриття блоку `session.begin()` дані вже зафіксовані в БД.
+        # Оновлюємо екземпляр, щоб витягнути згенерований ID та дату створення
+        await session.refresh(message_record)
+
+        # 🚀 ВІДПРАВЛЯЄМО В ЖИВИЙ ВЕБ-СОКЕТ АДМІНКИ ВЮ
+        try:
+            socket_payload = {
+                "type": "new_message",
+                "payload": {
+                    "id": message_record.id,
+                    "user_id": message_record.user_id,
+                    "sender": message_record.sender,
+                    "text": message_record.text,
+                    "msg_type": message_record.msg_type,
+                    "is_edited": bool(message_record.is_edited),
+                    "created_at": message_record.created_at.isoformat() if message_record.created_at else None
+                }
+            }
+            
+            # Викликаємо саме універсальний broadcast!
+            await ws_manager.broadcast(socket_payload)
+            print(f"[WS SUCCESS] Надіслано подію для користувача {user_id} через сокет")
+        except Exception as e:
+            print(f"[WS ERROR] Не вдалося штовхнути сокет: {e}")
+            
+        except Exception as e:
+            print(f"[WS ERROR] Не вдалося штовхнути сокет: {e}")
 
 
 # Функція для відправки на стороннє API
@@ -291,3 +324,47 @@ async def handle_user_request(message: types.Message):
     
     await save_to_db(user_id, username, reply_text, sender="bot", msg_type="text", theme=current_theme)
     await send_to_external_api(user_id, username, f"Створено тикет №{new_ticket_num} з файлом ({extracted_file_type})")
+
+
+# ОБРОБНИК РЕДАГУВАННЯ ПОВІДОМЛЕНЬ
+@router.edited_message()
+async def handle_edited_user_message(edited_message: types.Message):
+    user_id = edited_message.from_user.id
+    new_text = edited_message.text or edited_message.caption or ""
+
+    async with async_session() as session:
+        async with session.begin():
+            # 1. Шукаємо ОСТАННЄ повідомлення від цього юзера в базі даних, яке є тікетом/текстом
+            # (оскільки ми не зберігаємо message_id телеграму, оновлюємо останню репліку розмови)
+            query = await session.execute(
+                select(Message)
+                .where(Message.user_id == user_id, Message.sender == "user")
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+            db_message = query.scalar_one_or_none()
+
+            if db_message:
+                # Оновлюємо текст і ставимо прапорець редагування
+                db_message.text = new_text
+                db_message.is_edited = True  # Ставимо 1 або True
+                
+                await session.flush()
+                
+                # 2. Формуємо сокет-пайлоад із оновленими даними
+                try:
+                    socket_payload = {
+                        "type": "new_message",
+                        "payload": {
+                            "id": db_message.id,
+                            "user_id": db_message.user_id,
+                            "sender": db_message.sender,
+                            "text": db_message.text,
+                            "msg_type": db_message.msg_type,
+                            "is_edited": True, # Чітко True
+                            "created_at": db_message.created_at.isoformat() if db_message.created_at else None
+                        }
+                    }
+                    await ws_manager.broadcast(socket_payload)
+                except Exception as ws_err:
+                    print(f"[WS EDIT ERROR]: {ws_err}")

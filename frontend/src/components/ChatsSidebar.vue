@@ -7,9 +7,10 @@
         :class="['tg-tab-btn', { active: store.currentTab === tab }]"
         @click="changeTab(tab)"
       >
-        {{ tab === 'tech' ? 'Технічна' : tab === 'billing' ? 'Оплата' : 'Finera' }}
-        <span class="tab-badge" v-if="getTabCount(tab) > 0">
-          {{ getTabCount(tab) }}
+        {{ tab === 'tech' ? 'Технічна' : tab === 'billing' ? 'Оплата' : 'Архів' }}
+        
+        <span class="tab-badge" v-if="getTabUnreadCount(tab) > 0">
+          {{ getTabUnreadCount(tab) }}
         </span>
       </button>
     </div>
@@ -17,8 +18,8 @@
     <div class="tg-chats-list">
       <div 
         v-for="ticket in store.filteredTickets" 
-        :key="ticket.id"
-        :class="['tg-chat-item', { active: store.selectedTicket?.id === ticket.id }]"
+        :key="ticket.telegram_id || ticket.id"
+        :class="['tg-chat-item', { active: store.selectedTicket?.telegram_id === ticket.telegram_id }]"
         @click="store.selectTicket(ticket)"
       >
         <div class="chat-avatar">
@@ -27,11 +28,16 @@
         <div class="chat-info">
           <div class="chat-header">
             <span class="chat-name">@{{ ticket.username }}</span>
-            <span class="chat-time">{{ ticket.time }}</span>
+            <span class="chat-time">{{ formatTime(ticket.last_message_time || ticket.time) }}</span>
           </div>
-          <p class="chat-last-msg">{{ ticket.message }}</p>
+          <p class="chat-last-msg">{{ ticket.last_message_text || ticket.message || 'Немає повідомлень' }}</p>
+        </div>
+
+        <div v-if="ticket.unread_count > 0" class="chat-unread-badge">
+          {{ ticket.unread_count }}
         </div>
       </div>
+      
       <div v-if="store.filteredTickets.length === 0" class="tg-empty-txt">
         Нічого не знайдено
       </div>
@@ -48,9 +54,27 @@ const changeTab = (tab) => {
   if (typeof store.fetchTickets === 'function') store.fetchTickets()
 }
 
-const getTabCount = (tab) => {
-  if (!store.tickets) return 0
-  return store.tickets.filter(t => t.category === tab).length
+// Рахуємо суму саме НЕПРОЧИТАНИХ повідомлень для кожного таба
+const getTabUnreadCount = (tab) => {
+  if (!store.tickets || !Array.isArray(store.tickets)) return 0
+  
+  return store.tickets.filter(t => {
+    let ticketTab = 'archive'
+    if (t.current_theme === 'tech_support' || t.category === 'tech') {
+      ticketTab = 'tech'
+    } else if (t.current_theme === 'billing_issue' || t.category === 'billing') {
+      ticketTab = 'billing'
+    }
+    return ticketTab === tab
+  }).reduce((sum, t) => sum + (t.unread_count || 0), 0)
+}
+
+// Допоміжна функція для виведення часу (якщо з беку прилітає ISO рядок)
+const formatTime = (timeStr) => {
+  if (!timeStr) return ''
+  if (!timeStr.includes('T')) return timeStr // якщо це вже готовий рядок типу "15:30"
+  const date = new Date(timeStr)
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 </script>
 

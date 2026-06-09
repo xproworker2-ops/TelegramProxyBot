@@ -1,85 +1,123 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import axios from 'axios'
+
+const API_URL = 'http://localhost:8000/api/v1/admin'
+const WS_URL = 'ws://localhost:8000/api/v1/admin/ws'
 
 export const useTicketStore = defineStore('tickets', () => {
-  const currentTab = ref('tech')
+  const currentTab = ref('tech') 
   const selectedTicket = ref(null)
+  const tickets = ref([])
+  const filters = ref({ id: '', status: '', text: '', date: '', userClass: '' })
+  const socket = ref(null)
 
-  // Глобальний стан фільтрів
-  const filters = ref({
-    id: '',
-    status: '',
-    text: '',
-    date: '',
-    userClass: ''
-  })
-
-  const tickets = ref([
-    { id: 101, username: 'ivan_dev', message: 'Не працює проксі на другому сервері, помилка тайм-ауту.', time: '14:05', category: 'tech', status: 'new', userClass: 'VIP', date: '2026-06-09', replies: [] },
-    { id: 103, username: 'alex_k', message: 'Як оновити конфіг для тунелю через термінал на Ubuntu?', time: '14:20', category: 'tech', status: 'in_progress', userClass: 'Regular', date: '2026-06-09', replies: [] },
-    { id: 102, username: 'mari_biz', message: 'Оплатила підписку на місяць, але баланс досі не оновився.', time: '14:12', category: 'billing', status: 'new', userClass: 'Premium', date: '2026-06-08', replies: [] },
-    { id: 99, username: 'user32', message: 'Дякую, все запрацювало після рестарту.', time: '13:50', category: 'archive', status: 'closed', userClass: 'Regular', date: '2026-06-07', replies: [] }
-  ])
-
-  // Функція для скидання фільтрів
-  const resetFilters = () => {
-    filters.value = { id: '', status: '', text: '', date: '', userClass: '' }
-  }
-
-  // Майбутній метод для запитів до FastAPI бекенду
-  const fetchTickets = async () => {
-    console.log('Робимо запит до API з параметрами:', {
-      category: currentTab.value,
-      ...filters.value
-    })
-    // Тут потім буде: const res = await axios.get('/api/tickets', { params: ... })
-  }
-
-  // Розумний фільтр на фронтенді (працює вже зараз для тестів)
+  // 🔍 РЕАКТИВНА ФІЛЬТРАЦІЯ
   const filteredTickets = computed(() => {
+    if (!tickets.value || !Array.isArray(tickets.value)) return []
+    
     return tickets.value.filter(ticket => {
-      if (ticket.category !== currentTab.value) return false
-      if (filters.value.id && !String(ticket.id).includes(filters.value.id)) return false
-      if (filters.value.status && ticket.status !== filters.value.status) return false
-      if (filters.value.userClass && ticket.userClass !== filters.value.userClass) return false
-      if (filters.value.date && ticket.date !== filters.value.date) return false
-      if (filters.value.text) {
-        const search = filters.value.text.toLowerCase()
-        return ticket.message.toLowerCase().includes(search) || ticket.username.toLowerCase().includes(search)
+      let ticketTab = 'archive'
+      
+      if (ticket.current_theme === 'tech_support' || ticket.category === 'tech') {
+        ticketTab = 'tech'
+      } else if (ticket.current_theme === 'billing_issue' || ticket.category === 'billing') {
+        ticketTab = 'billing'
+      } else if (ticket.has_active_ticket === false) {
+        ticketTab = 'archive'
       }
+
+      if (ticketTab !== currentTab.value) return false
+
+      if (filters.value.text && ticket.username) {
+        const search = filters.value.text.toLowerCase()
+        if (!ticket.username.toLowerCase().includes(search)) return false
+      }
+
       return true
     })
   })
 
-  const selectTicket = (ticket) => {
+  // 🔌 ЖИВИЙ ВЕБ-СОКЕТ
+  const initWebSocket = () => {
+      // 1. Перевірка стану перед створенням нового з'єднання
+      if (socket.value && socket.value.readyState !== WebSocket.CLOSED) {
+          return;
+      }
+
+      console.log("🔌 [WS START]: Підключаємося до:", WS_URL)
+      socket.value = new WebSocket(WS_URL)
+
+      socket.value.onopen = () => {
+          console.log("✅ [WS SUCCESS]: З'єднання встановлено!")
+      }
+
+      socket.value.onmessage = (event) => {
+          // ... (ваш код обробки повідомлень залишається без змін)
+      }
+
+      socket.value.onclose = (event) => {
+          console.warn(`⚠️ [WS CLOSE]: Код: ${event.code}. Реконнект через 3 сек...`)
+          socket.value = null // Обов'язково скидаємо посилання
+          setTimeout(initWebSocket, 3000)
+      }
+  }
+
+  const fetchTickets = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/users`)
+      tickets.value = response.data
+    } catch (error) {
+      console.error("Помилка fetchTickets:", error)
+    }
+  }
+
+  const selectTicket = async (ticket) => {
     selectedTicket.value = ticket
+    try {
+      const response = await axios.get(`${API_URL}/users/${ticket.telegram_id}/messages`, {
+        params: { _t: Date.now() }
+      })
+      selectedTicket.value.messages_history = response.data
+      ticket.unread_count = 0
+      tickets.value = [...tickets.value] 
+    } catch (error) {
+      console.error("Помилка завантаження повідомлень:", error)
+    }
   }
 
-  const sendReply = (text) => {
-    if (!selectedTicket.value || !text.trim()) return
-    const now = new Date()
-    selectedTicket.value.replies.push({
-      text,
-      time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-    })
-  }
-
-  const archiveCurrentTicket = () => {
+  const sendReply = async (text) => {
     if (!selectedTicket.value) return
-    selectedTicket.value.category = 'archive'
-    selectedTicket.value.status = 'closed'
-    selectedTicket.value = null
+    try {
+      const response = await axios.post(`${API_URL}/messages/send-to-user`, {
+        text,
+        user_id: selectedTicket.value.telegram_id
+      })
+
+      if (response.data?.status === "success" || response.status === 200) {
+        if (!selectedTicket.value.messages_history) selectedTicket.value.messages_history = []
+        
+        selectedTicket.value.messages_history.push({
+          id: Date.now(),
+          user_id: selectedTicket.value.telegram_id,
+          sender: 'our_admin_to_user',
+          text: text,
+          created_at: new Date().toISOString()
+        })
+        
+        selectedTicket.value = { ...selectedTicket.value }
+      }
+    } catch (error) {
+      console.error("Помилка відправки повідомлення користувачу:", error)
+    }
+  }
+
+  const resetFilters = () => {
+    filters.value = { id: '', status: '', text: '', date: '', userClass: '' }
   }
 
   return {
-    currentTab,
-    selectedTicket,
-    filters,
-    filteredTickets,
-    resetFilters,
-    fetchTickets,
-    selectTicket,
-    sendReply,
-    archiveCurrentTicket
+    currentTab, selectedTicket, tickets, filters, filteredTickets,
+    initWebSocket, fetchTickets, selectTicket, sendReply, resetFilters
   }
 })

@@ -3,7 +3,7 @@
     <div class="tg-chat-header">
       <div v-if="store.selectedTicket" class="chat-header-user">
         <span class="chat-name">Чат з @{{ store.selectedTicket.username }}</span>
-        <span class="chat-status">тикет #{{ store.selectedTicket.id }}</span>
+        <span class="chat-status">ID: {{ store.selectedTicket.telegram_id }}</span>
       </div>
       <div v-else class="chat-header-user">
         <span class="chat-name">Фільтрація звернень</span>
@@ -13,7 +13,7 @@
         <input 
           type="text" 
           v-model="store.filters.text" 
-          placeholder="Пошук тексту..." 
+          placeholder="Пошук текста..." 
           @input="store.fetchTickets"
           class="filter-input search-input"
         />
@@ -50,21 +50,24 @@
 
     <template v-if="store.selectedTicket">
       <div class="tg-chat-messages">
-        <div class="msg-row user-msg">
+        <div 
+          v-for="msg in store.selectedTicket.messages_history" 
+          :key="msg.id" 
+          :class="['msg-row', msg.sender === 'user' ? 'user-msg' : 'operator-msg']"
+        >
           <div class="msg-bubble">
-            <p>{{ store.selectedTicket.message }}</p>
-            <span class="msg-time">{{ store.selectedTicket.time }}</span>
-          </div>
-        </div>
-
-        <template v-if="store.selectedTicket.replies && store.selectedTicket.replies.length > 0">
-          <div v-for="(reply, idx) in store.selectedTicket.replies" :key="idx" class="msg-row operator-msg">
-            <div class="msg-bubble" v-if="reply">
-              <p>{{ reply.text }}</p>
-              <span class="msg-time">{{ reply.time }}</span>
+            <span class="msg-author-tag">{{ getSenderLabel(msg.sender) }}</span>
+            
+            <p>{{ msg.text }}</p>
+            
+            <div class="msg-meta">
+              <span v-if="msg.is_edited" class="msg-edited-badge" title="Користувач змінив це повідомлення в Telegram">
+                ✏️ ред.
+              </span>
+              <span class="msg-time">{{ formatTime(msg.created_at) }}</span>
             </div>
           </div>
-        </template>
+        </div>
       </div>
 
       <div class="tg-chat-input-zone">
@@ -116,10 +119,26 @@ const handleReset = () => {
   store.fetchTickets()
 }
 
+// Повертає зрозумілу мітку для розробника/адміна
+const getSenderLabel = (sender) => {
+  if (sender === 'user') return 'Клієнт'
+  if (sender === 'bot') return 'Бот'
+  if (sender === 'our_admin_to_user') return 'Ви'
+  return sender
+}
+
+// Красиве відображення часу відправки смс
+const formatTime = (isoString) => {
+  if (!isoString) return ''
+  const date = new Date(isoString)
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
 watch(() => store.selectedTicket, () => { replyText.value = '' })
 </script>
 
 <style scoped>
+/* Усі твої стилі залишаються 1 в 1, додаємо лише один дрібний стиль для тегу автора */
 .tg-chat-window {
   flex-grow: 1;
   background-color: #f4f4f5;
@@ -169,4 +188,27 @@ watch(() => store.selectedTicket, () => { replyText.value = '' })
 .tg-send-btn { background: none; border: none; font-size: 1.6rem; cursor: pointer; color: #3390ec; }
 .tg-no-chat-selected { flex-grow: 1; display: flex; justify-content: center; align-items: center; background-color: #f4f4f5; }
 .tg-select-hint { background-color: rgba(255, 255, 255, 0.9); padding: 8px 18px; border-radius: 15px; font-size: 0.9rem; color: #707579; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+.tg-empty-txt { text-align: center; color: #a1aab3; font-size: 0.9rem; margin-top: 20px; font-style: italic; }
+
+/* ТЕГ АВТОРА */
+.msg-author-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #707579;
+  display: block;
+  margin-bottom: 2px;
+}
+.msg-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+.msg-edited-badge {
+  font-size: 0.7rem;
+  color: #3390ec;
+  font-style: italic;
+  font-weight: 500;
+}
 </style>
