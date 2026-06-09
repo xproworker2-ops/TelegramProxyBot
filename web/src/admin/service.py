@@ -1,12 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, update
 from database.models import User, Message  # Твої моделі
-from aiogram import Bot
-import os
-
-# Ініціалізуємо бота для надсилання сповіщень (наприклад, при закритті тикета)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=BOT_TOKEN)
+from src.bot_instance import bot
 
 class AdminService:
     
@@ -104,12 +99,13 @@ class AdminService:
         await session.commit()
         
         # Надсилаємо клієнту в Телеграм сповіщення через бота
-        try:
-            await bot.send_message(
-                chat_id=user_id, 
-                text="🔒 **Ваше звернення було успішно вирішено та закрито оператором.**\nДякуємо, що звернулися!"
-            )
-        except Exception as e:
-            print(f"[ТГ Помилка закриття]: {e}")
+        if bot is not None:
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text="🔒 **Ваше звернення було успішно вирішено та закрито оператором.**\nДякуємо, що звернулися!"
+                )
+            except Exception as e:
+                print(f"[ТГ Помилка закриття]: {e}")
             
         return True

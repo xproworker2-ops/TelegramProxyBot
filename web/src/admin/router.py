@@ -40,10 +40,11 @@ async def close_ticket(user_id: int, db: AsyncSession = Depends(get_db)):
         user.has_active_ticket = False
         user.current_theme = "Не обрано"
         await db.commit()
-        await bot.send_message(
-            chat_id=user_id, 
-            text="🔒 Ваше звернення було успішно вирішено та закрито оператором."
-        )
+        if bot is not None:
+            await bot.send_message(
+                chat_id=user_id,
+                text="🔒 Ваше звернення було успішно вирішено та закрито оператором."
+            )
         return {"status": "success", "message": "Ticket closed"}
     raise HTTPException(status_code=404, detail="User not found")
 
